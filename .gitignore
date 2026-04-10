@@ -1,4 +1,9 @@
 .env
 env/
+.venv/
 __pycache__/
 *.pyc
+.vercel/
+*.log
+*.idea/
+*.vscode/

@@ -84,7 +84,6 @@ negotiation_chain_instance = NegotiationChain(llm=llm)
 async def lifespan(app: FastAPI):
     logger.info("Startup: fetching properties and building FAISS index …")
     await cache_mgr.refresh_cache()
-    cache_mgr.start_background_refresh()
     yield
     # Teardown (extend here if needed)
 
