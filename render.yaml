@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: chatbot-advisor
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
