@@ -1,7 +1,7 @@
 import logging
 import json
 from typing import List, Dict, Any
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
@@ -55,9 +55,9 @@ def _property_to_text(prop: Dict[str, Any]) -> str:
 class VectorStoreManager:
     def __init__(
         self,
-        embedding_model_name: str = "paraphrase-multilingual-MiniLM-L12-v2",
+        embedding_model_name: str = "models/gemini-embedding-001",
     ):
-        self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
+        self.embeddings = GoogleGenerativeAIEmbeddings(model=embedding_model_name)
         self.vector_store: FAISS | None = None
 
     def build_vector_store(self, properties: List[Dict[str, Any]]):

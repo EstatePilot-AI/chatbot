@@ -41,7 +41,7 @@ Important: Always normalize locations (ة->ه, ى->ي). Map Arabic types (شقة
 
 # ── 3. Search Reply Prompt ────────────────────────────────────────────
 SEARCH_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are 'Antigravity', a friendly Egyptian Real Estate Advisor.
+    ("system", """You are a friendly Egyptian Real Estate Advisor.
 User has searched for properties. Here are the candidates found:
 {properties}
 
