@@ -6,14 +6,14 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel
 
 from cache_manager import CacheManager
 from decision_engine import DecisionEngine
 from filter_engine import FilterEngine
-from prompt_templates import CLARIFICATION_PROMPT, RECOMMEND_PROMPT
+from prompt_templates import CHAT_PROMPT, CLARIFICATION_PROMPT, RECOMMEND_PROMPT
 from query_analyzer import QueryAnalyzer
 # from query_parser import QueryParser
 # from router import IntentRouter
@@ -45,7 +45,7 @@ TOP_N_RESULTS = 5
 
 # Arabic fallback note injected when no property matched the hard filters.
 FALLBACK_NOTE_AR = (
-    "⚠️ مفيش عقار بالمواصفات دي بالظبط في قاعدة البيانات، "
+    "مفيش عقار بالمواصفات دي بالظبط في قاعدة البيانات، "
     "بس دي أقرب النتايج المتاحة ليك:\n\n"
 )
 
@@ -57,16 +57,17 @@ load_dotenv()
 cache_mgr   = CacheManager(api_url=API_URL, refresh_interval_sec=600)
 session_mgr = SessionManager()
 
-google_api_key = os.getenv("GOOGLE_API_KEY")
-if not google_api_key:
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
     logger.warning(
-        "GOOGLE_API_KEY is not set. Google Gemini requests may fail or be rejected."
+        "GROQ_API_KEY is not set. Groq requests may fail or be rejected."
     )
 
-logger.info("Loading Google Gemini 2.0 Flash model ...")
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=google_api_key,
+logger.info("Loading Groq model openai/gpt-oss-20b ...")
+llm = ChatOpenAI(
+    model="openai/gpt-oss-20b",
+    api_key=groq_api_key,
+    base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
     temperature=0.7,
     max_tokens=4096,
 )
@@ -127,9 +128,7 @@ class SmartSearchRequest(BaseModel):
 MIN_CONFIDENCE_THRESHOLD = 0.30  # Clarify if top result is below this
 RELAXATION_CONFIDENCE    = 0.60  # If below this, try relaxation
 
-import re
-
-# (Dumb regex selection logic removed)
+PROPERTY_INTENTS = {"search", "recommend", "compare", "negotiate", "select_property"}
 
 def _run_rag_pipeline(
     query: str,
@@ -217,14 +216,14 @@ async def ai_advisor_endpoint(req: ChatRequest):
         
         if selected_id:
             # Match Found
-            egy_reply = f"تمام 👌\nhttps://estate-pilot-shop.vercel.app/properties/{selected_id}"
+            egy_reply = f"تمام. تقدر تراجع العقار من هنا:\nhttps://estate-pilot-shop.vercel.app/properties/{selected_id}"
             logger.info(f"[{user_id}] AI Selection matched → ID {selected_id}")
             # Identify the property object for the return payload (optional but good)
             matched_prop = next((p for p in last_props if p.get("propertyId") == selected_id), None)
             top_props = [matched_prop] if matched_prop else []
         else:
             # Fallback (Ambiguous or Null)
-            egy_reply = "تؤمرني يا فندم، تقدر تشوف كل العقارات المتاحة من هنا:\nhttps://estate-pilot-shop.vercel.app/properties"
+            egy_reply = "تؤمرني يا فندم. تقدر تشوف كل العقارات المتاحة من هنا:\nhttps://estate-pilot-shop.vercel.app/properties"
             logger.info(f"[{user_id}] Selection ambiguous → returned general link")
             top_props = []
 
@@ -234,6 +233,42 @@ async def ai_advisor_endpoint(req: ChatRequest):
             "filters_extracted": session_mgr.get_accumulated_filters(user_id),
             "top_properties": top_props,
             "reply_in_egyptian_arabic": egy_reply,
+        }
+
+    if intent == "chat":
+        try:
+            chat_chain = CHAT_PROMPT | llm | StrOutputParser()
+            egy_reply = chat_chain.invoke({"query": query, "history": history_str}).strip()
+        except Exception as e:
+            logger.error(f"[{user_id}] Chat chain error: {e}")
+            egy_reply = (
+                "ممكن توضح سؤالك أكتر"
+            )
+
+        session_mgr.add_interaction(user_id, query, egy_reply)
+        return {
+            "module": "Chat",
+            "filters_extracted": session_mgr.get_accumulated_filters(user_id),
+            "top_properties": [],
+            "reply_in_egyptian_arabic": egy_reply,
+            "explanation": "General conversation handled directly.",
+        }
+
+    if intent not in PROPERTY_INTENTS:
+        try:
+            chat_chain = CHAT_PROMPT | llm | StrOutputParser()
+            egy_reply = chat_chain.invoke({"query": query, "history": history_str}).strip()
+        except Exception as e:
+            logger.error(f"[{user_id}] Generic intent fallback error: {e}")
+            egy_reply = "ممكن توضح سؤالك أكتر عشان أرد عليك بشكل مباشر؟"
+
+        session_mgr.add_interaction(user_id, query, egy_reply)
+        return {
+            "module": intent.title(),
+            "filters_extracted": session_mgr.get_accumulated_filters(user_id),
+            "top_properties": [],
+            "reply_in_egyptian_arabic": egy_reply,
+            "explanation": "Non-property intent handled as general conversation.",
         }
     
     # ── 3. Merge into session ─────────────────────────────────────────────
@@ -330,7 +365,7 @@ async def ai_advisor_endpoint(req: ChatRequest):
                 egy_reply += "\nممكن تسألني عن أي واحدة فيهم بالتفصيل لما السيستم يرجع طبيعي."
             explanation = "FAISS → filter → score → Hard Fallback (LLM failed)."
         else:
-            egy_reply   = "مش لاقي عقارات تناسب البحث ده دلوقتي للأسف."
+            egy_reply   = "مش لاقي عقارات تناسب البحث ده دلوقتي للأسف. لو تحب، ابعتلي ميزانية أو منطقة أو نوع العقار وأنا احسن البحث."
             explanation = "No properties found after filtering."
         
         # Save results for future selection
@@ -355,7 +390,7 @@ async def ai_advisor_endpoint(req: ChatRequest):
                 egy_reply = search_chain_instance.execute(query, [best_prop], history_str)
             explanation = "Scored all candidates; top-ranked property recommended."
         else:
-            egy_reply   = "مش لاقي عقار مناسب ليك دلوقتي للأسف."
+            egy_reply   = "مش لاقي عقار مناسب ليك دلوقتي للأسف. لو تحب، ابعتلي تفاصيل أكتر عن الميزانية أو المكان أو المساحة عشان أرشح حاجة أدق."
             explanation = "No properties found to recommend."
 
     # ─ Compare ────────────────────────────────────────────────────────────
@@ -374,7 +409,7 @@ async def ai_advisor_endpoint(req: ChatRequest):
                 egy_reply = search_chain_instance.execute(query, top_2, history_str)
             explanation = "Top-2 scored properties compared."
         else:
-            egy_reply   = "محتاج على الأقل عقارين عشان أقارن بينهم — مش لاقي كفاية."
+            egy_reply   = "محتاج على الأقل عقارين عشان أقارن بينهم. لو تبعتلي اختيارات أكتر أو توضح تفضيلاتك، أقدر أعمل مقارنة أوضح."
             explanation = "Not enough properties to compare."
 
     # ─ Negotiate ──────────────────────────────────────────────────────────
@@ -393,7 +428,7 @@ async def ai_advisor_endpoint(req: ChatRequest):
                 egy_reply = search_chain_instance.execute(query, [best_prop], history_str)
             explanation = "Best-scored property identified; negotiation advice generated."
         else:
-            egy_reply   = "مش لاقي عقار محدد عشان نتفاوض عليه."
+            egy_reply   = "مش لاقي عقار محدد عشان نتفاوض عليه. لو تبعتلي عقار بعينه أو مواصفاته، أقولك هل سعره مناسب وإزاي تفاوض عليه."
             explanation = "No property identified for negotiation."
 
     # ── 9. Prepend fallback note when soft scoring was used ───────────────
